@@ -42,6 +42,9 @@ export function setup(ctx) {
     .urm .stat strong { display:block; font-size:17px; }
     .urm .stat span { font-size:11px; opacity:.7; }
     .urm .section { font-size:13px; font-weight:700; margin:18px 0 8px; }
+    .urm .active-panel { border:1px solid var(--accent, #7864c8); border-radius:11px; padding:0 10px 10px; margin:12px 0 16px; }
+    .urm .active-panel .section { margin-top:10px; }
+    .urm .pinned-list:empty { display:none; }
     .urm .model { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; border:1px solid var(--border-color, #7775); background:var(--surface-1, #8881); border-radius:10px; padding:10px; margin:7px 0; }
     .urm .model-name { font-size:13px; font-weight:650; overflow-wrap:anywhere; }
     .urm .model-meta { font-size:11px; opacity:.7; margin-top:3px; display:flex; gap:7px; flex-wrap:wrap; }
@@ -68,6 +71,7 @@ export function setup(ctx) {
   let watchlist = readWatchlist();
   let filter = "all";
   let search = "";
+  let activeConnection = null;
 
   function readWatchlist() {
     try {
@@ -148,6 +152,37 @@ export function setup(ctx) {
     if (errorMessage) app.append(el("div", "notice error", errorMessage));
     if (loading && models.length === 0) app.append(el("div", "empty", "Loading UnoRouter catalogue…"));
 
+    // Active Lumiverse LLM connection (read-only; no credentials are exposed).
+    if (activeConnection) {
+      const activeModelId = activeConnection.model || "";
+      const activeProvider = activeConnection.provider || "Unknown provider";
+      const normalized = value => String(value || "").toLowerCase().replace(/^models\\//, "").trim();
+      const matched = models.find(m => {
+        const candidates = [m.model_name, m.id, m.model, m.model_id, m.slug];
+        return candidates.some(v => normalized(v) === normalized(activeModelId));
+      });
+      const looksLikeUnoRouter = /unorouter/i.test(activeProvider) || !!matched;
+      const panel = el("div", "active-panel");
+      panel.append(el("div", "section", "Currently connected"));
+      const row = el("div", "model");
+      const info = el("div");
+      info.append(el("div", "model-name", activeModelId || "No model selected"));
+      info.append(el("div", "model-meta", (looksLikeUnoRouter ? "UnoRouter · " : "") + activeProvider));
+      if (matched) {
+        const prices = el("div", "prices");
+        prices.append(el("span", "", "In " + money(matched.input_price) + " / 1M"));
+        prices.append(el("span", "", "Out " + money(matched.output_price) + " / 1M"));
+        info.append(prices);
+      } else {
+        info.append(el("div", "model-meta", looksLikeUnoRouter
+          ? "Model not found in the current UnoRouter catalogue"
+          : "This connection is not identified as an UnoRouter model"));
+      }
+      row.appendChild(info);
+      panel.appendChild(row);
+      app.appendChild(panel);
+    }
+
     if (models.length) {
       const stats = el("div", "stats");
       const free = models.filter(m => m.is_free).length;
@@ -174,27 +209,40 @@ export function setup(ctx) {
       toolbar.append(searchInput, select);
       app.append(toolbar);
 
+      const pinned = el("div", "pinned-list");
+      app.append(pinned);
       const lists = el("div", "lists");
       app.append(lists);
       function renderLists() {
+        pinned.replaceChildren();
         lists.replaceChildren();
+        if (filter === "all" || filter === "watchlist") {
+          const pinnedModels = models.filter(m => watchlist.includes(m.model_name));
+          if (pinnedModels.length) {
+            pinned.append(el("div", "section", "Pinned models"));
+            pinnedModels.sort((a,b) => (a.model_name || "").localeCompare(b.model_name || ""));
+            pinnedModels.forEach(m => addModelCard(pinned, m));
+          }
+        }
         const q = search.trim().toLowerCase();
         let visible = models.filter(m => {
           const matches = (m.model_name + " " + (m.vendor || "") + " " + (m.type || "")).toLowerCase().includes(q);
           if (!matches) return false;
           if (filter === "watchlist") return watchlist.includes(m.model_name);
+          if (filter === "all" && watchlist.includes(m.model_name)) return false;
           if (filter === "free") return !!m.is_free;
           if (filter === "paid") return !m.is_free;
           if (filter === "online") return !!m.online;
           return true;
         });
         if (filter === "watchlist") {
-          lists.append(el("div", "section", "Your watchlist"));
+          lists.append(el("div", "section", "Pinned models"));
         } else {
           lists.append(el("div", "section", "Models (" + visible.length + ")"));
         }
         if (!visible.length) {
-          lists.append(el("div", "empty", filter === "watchlist" ? "No watched models yet. Switch to All models and tap ☆ beside a model." : "No models match this search."));
+          if (filter === "watchlist" && pinned.childElementCount) return;
+          lists.append(el("div", "empty", filter === "watchlist" ? "No pinned models yet. Switch to All models and tap ☆ beside a model." : "No models match this search."));
           return;
         }
         visible.sort((a,b) => (a.model_name || "").localeCompare(b.model_name || ""));
@@ -248,6 +296,25 @@ export function setup(ctx) {
     }
   }
 
+  // The frontend connection API exposes the active LLM profile without revealing secrets.
+  try {
+    if (ctx.connections && typeof ctx.connections.getActive === "function") {
+      activeConnection = ctx.connections.getActive();
+      if (activeConnection && typeof activeConnection.then === "function") {
+        activeConnection.then(value => { activeConnection = value; render(); }).catch(() => {});
+      }
+    }
+  } catch {}
+  let unsubscribeConnection = null;
+  try {
+    if (ctx.connections && typeof ctx.connections.subscribe === "function") {
+      unsubscribeConnection = ctx.connections.subscribe(connection => {
+        activeConnection = connection || null;
+        render();
+      });
+    }
+  } catch {}
+
   render();
   loadCatalog();
   const timer = setInterval(loadCatalog, REFRESH_MS);
@@ -259,6 +326,7 @@ export function setup(ctx) {
     clearInterval(timer);
     if (typeof unsubscribe === "function") unsubscribe();
     if (typeof unsubscribeBackend === "function") unsubscribeBackend();
+    if (typeof unsubscribeConnection === "function") unsubscribeConnection();
     pending.clear();
     tab.destroy();
     style.remove();
