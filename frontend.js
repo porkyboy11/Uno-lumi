@@ -2,8 +2,10 @@
 // Uses UnoRouter's public pricing catalogue; no API key or account token is needed.
 
 const CATALOG_URL = "https://api.unorouter.com/api/pricing/catalog";
-const REFRESH_MS = 5 * 60 * 1000;
 const STORAGE_KEY = "unorouter_price_monitor_watchlist_v1";
+const REFRESH_STORAGE_KEY = "unorouter_price_monitor_refresh_v1";
+const SORT_STORAGE_KEY = "unorouter_price_monitor_sort_v1";
+const REFRESH_OPTIONS = [["0","Off"],["60000","1 minute"],["300000","5 minutes"],["900000","15 minutes"],["1800000","30 minutes"],["3600000","60 minutes"]];
 
 export function setup(ctx) {
   const tab = ctx.ui.registerDrawerTab({
@@ -37,6 +39,9 @@ export function setup(ctx) {
     .urm .toolbar { display:flex; gap:8px; margin:12px 0; flex-wrap:wrap; }
     .urm .toolbar input { flex:1 1 180px; }
     .urm .toolbar select { flex:0 1 150px; }
+    .urm .head-setting { display:flex; align-items:center; gap:6px; }
+    .urm .head-setting label { font-size:11px; opacity:.7; }
+    .urm .head-setting select { max-width:125px; padding:7px 8px; }
     .urm .stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:12px 0; }
     .urm .stat { border:1px solid var(--border-color, #7775); background:var(--surface-1, #8881); border-radius:10px; padding:10px; min-width:0; }
     .urm .stat strong { display:block; font-size:17px; }
@@ -73,7 +78,21 @@ export function setup(ctx) {
   let search = "";
   let activeConnection = null;
   let activeProfileName = null;
+  let refreshInterval = readNumberSetting(REFRESH_STORAGE_KEY, 0);
+  let sortMode = readSetting(SORT_STORAGE_KEY, "input-asc");
+  let refreshTimer = null;
+  let destroyed = false;
 
+  function readSetting(key, fallback) {
+    try { return localStorage.getItem(key) || fallback; } catch { return fallback; }
+  }
+  function readNumberSetting(key, fallback) {
+    const value = Number(readSetting(key, String(fallback)));
+    return Number.isFinite(value) && value >= 0 ? value : fallback;
+  }
+  function saveSetting(key, value) {
+    try { localStorage.setItem(key, String(value)); } catch {}
+  }
   function readWatchlist() {
     try {
       const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
@@ -143,10 +162,25 @@ export function setup(ctx) {
     titleWrap.append(el("div", "urm-sub", lastUpdated ? "Updated " + lastUpdated.toLocaleTimeString() : "Live model catalogue"));
     head.appendChild(titleWrap);
     const actions = el("div", "urm-actions");
+    const refreshSetting = el("div", "head-setting");
+    const refreshLabel = el("label", "", "Auto");
+    const refreshSelect = el("select");
+    refreshSelect.setAttribute("aria-label", "Auto-refresh interval");
+    REFRESH_OPTIONS.forEach(([value,label]) => {
+      const option = el("option", "", label); option.value = value; refreshSelect.appendChild(option);
+    });
+    refreshSelect.value = String(refreshInterval);
+    refreshSelect.addEventListener("change", e => {
+      refreshInterval = Number(e.target.value) || 0;
+      saveSetting(REFRESH_STORAGE_KEY, refreshInterval);
+      scheduleAutoRefresh();
+      render();
+    });
+    refreshSetting.append(refreshLabel, refreshSelect);
     const refresh = el("button", "primary", loading ? "Refreshing…" : "Refresh");
     refresh.disabled = loading;
     refresh.addEventListener("click", loadCatalog);
-    actions.appendChild(refresh);
+    actions.append(refreshSetting, refresh);
     head.append(actions);
     app.append(head);
 
@@ -209,7 +243,16 @@ export function setup(ctx) {
       });
       select.value = filter;
       select.addEventListener("change", e => { filter = e.target.value; renderLists(); });
-      toolbar.append(searchInput, select);
+      const sortSelect = el("select");
+      sortSelect.setAttribute("aria-label", "Sort models");
+      [["input-asc","Input: low to high"],["input-desc","Input: high to low"],["output-asc","Output: low to high"],["output-desc","Output: high to low"],["name-asc","Name: A–Z"]].forEach(([value,label]) => {
+        const option = el("option", "", label); option.value = value; sortSelect.appendChild(option);
+      });
+      sortSelect.value = sortMode;
+      sortSelect.addEventListener("change", e => {
+        sortMode = e.target.value; saveSetting(SORT_STORAGE_KEY, sortMode); renderLists();
+      });
+      toolbar.append(searchInput, select, sortSelect);
       app.append(toolbar);
 
       const pinned = el("div", "pinned-list");
@@ -247,13 +290,14 @@ export function setup(ctx) {
           lists.append(el("div", "empty", filter === "watchlist" ? "No pinned models yet. Switch to All models and tap ☆ beside a model." : "No models match this search."));
           return;
         }
-        visible.sort((a,b) => (a.model_name || "").localeCompare(b.model_name || ""));
+        visible.sort(compareModels);
         visible.forEach(m => addModelCard(lists, m));
       }
       renderLists();
     }
 
-    app.append(el("div", "foot", "Prices are UnoRouter's current routed prices in USD per 1 million tokens, not necessarily each provider's list price. The catalogue is public; this extension does not use or store your API keys. Auto-refreshes every 5 minutes."));
+    const refreshDescription = refreshInterval === 0 ? "Auto-refresh is off; use Refresh to update prices manually." : "Auto-refreshes every " + (REFRESH_OPTIONS.find(([value]) => Number(value) === refreshInterval)?.[1] || "custom interval") + " while this browser page is visible.";
+    app.append(el("div", "foot", "Prices are UnoRouter's current routed prices in USD per 1 million tokens, not necessarily each provider's list price. The catalogue is public; this extension does not use or store your API keys. " + refreshDescription));
   }
 
   const pending = new Map();
@@ -281,8 +325,33 @@ export function setup(ctx) {
     render();
   });
 
+  function compareModels(a,b) {
+    if (sortMode === "name-asc") return (a.model_name || "").localeCompare(b.model_name || "");
+    const field = sortMode.startsWith("output") ? "output_price" : "input_price";
+    const direction = sortMode.endsWith("desc") ? -1 : 1;
+    const av = Number(a[field]), bv = Number(b[field]);
+    const aValid = a[field] !== null && a[field] !== undefined && Number.isFinite(av);
+    const bValid = b[field] !== null && b[field] !== undefined && Number.isFinite(bv);
+    if (!aValid && !bValid) return (a.model_name || "").localeCompare(b.model_name || "");
+    if (!aValid) return 1;
+    if (!bValid) return -1;
+    return (av-bv)*direction || (a.model_name || "").localeCompare(b.model_name || "");
+  }
+
+  function scheduleAutoRefresh() {
+    if (refreshTimer !== null) clearTimeout(refreshTimer);
+    refreshTimer = null;
+    if (destroyed || refreshInterval <= 0 || document.visibilityState === "hidden") return;
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null;
+      if (document.visibilityState !== "hidden") loadCatalog();
+    }, refreshInterval);
+  }
+
   async function loadCatalog() {
     if (loading) return;
+    if (refreshTimer !== null) clearTimeout(refreshTimer);
+    refreshTimer = null;
     loading = true;
     errorMessage = "";
     render();
@@ -296,6 +365,7 @@ export function setup(ctx) {
       errorMessage = "Couldn't contact the extension backend. " + (err && err.message ? err.message : String(err));
       render();
     }
+    scheduleAutoRefresh();
   }
 
   // Lumiverse exposes safe connection summaries (never API keys or endpoint secrets).
@@ -327,15 +397,29 @@ export function setup(ctx) {
     }
   } catch {}
 
+  function handleVisibilityChange() {
+    if (document.visibilityState === "hidden") {
+      if (refreshTimer !== null) clearTimeout(refreshTimer);
+      refreshTimer = null;
+    } else if (refreshInterval > 0 && (!lastUpdated || Date.now()-lastUpdated.getTime() >= refreshInterval)) {
+      loadCatalog();
+    } else {
+      scheduleAutoRefresh();
+    }
+  }
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+
   render();
   loadCatalog();
-  const timer = setInterval(loadCatalog, REFRESH_MS);
   const unsubscribe = tab.onActivate(() => {
-    if (!lastUpdated || Date.now() - lastUpdated.getTime() > REFRESH_MS) loadCatalog();
+    if (!lastUpdated || (refreshInterval > 0 && Date.now()-lastUpdated.getTime() >= refreshInterval)) loadCatalog();
+    else scheduleAutoRefresh();
   });
 
   return () => {
-    clearInterval(timer);
+    destroyed = true;
+    if (refreshTimer !== null) clearTimeout(refreshTimer);
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
     if (typeof unsubscribe === "function") unsubscribe();
     if (typeof unsubscribeBackend === "function") unsubscribeBackend();
     if (typeof unsubscribeConnection === "function") unsubscribeConnection();
