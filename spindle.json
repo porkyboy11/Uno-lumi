@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0",
+  "name": "UnoRouter Price Monitor",
+  "identifier": "unorouter_price_monitor",
+  "author": "ChatGPT",
+  "github": "https://github.com/",
+  "homepage": "https://unorouter.com/",
+  "description": "Browse and watch live UnoRouter model prices inside Lumiverse.",
+  "permissions": [],
+  "entry_frontend": "frontend.js",
+  "minimum_lumiverse_version": "0.1.0"
+}

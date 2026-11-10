@@ -1,0 +1,243 @@
+// UnoRouter Price Monitor — Lumiverse Spindle frontend extension
+// Uses UnoRouter's public pricing catalogue; no API key or account token is needed.
+
+const CATALOG_URL = "https://api.unorouter.com/api/pricing/catalog";
+const REFRESH_MS = 5 * 60 * 1000;
+const STORAGE_KEY = "unorouter_price_monitor_watchlist_v1";
+
+export function setup(ctx) {
+  const tab = ctx.ui.registerDrawerTab({
+    id: "unorouter-prices",
+    title: "UnoRouter Price Monitor",
+    shortName: "Prices",
+    headerTitle: "UnoRouter Prices",
+    description: "Live model pricing and availability",
+    keywords: ["unorouter", "models", "pricing", "tokens", "cost", "free"],
+    iconSvg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5"/><path d="M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/></svg>'
+  });
+
+  const root = tab.root;
+  root.replaceChildren();
+
+  const style = document.createElement("style");
+  style.textContent = `
+    .urm { color: var(--text-primary, inherit); font: inherit; padding: 14px; box-sizing: border-box; }
+    .urm * { box-sizing: border-box; }
+    .urm-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+    .urm-title { font-size:18px; font-weight:700; }
+    .urm-sub { opacity:.68; font-size:12px; margin-top:3px; }
+    .urm-actions { display:flex; gap:7px; align-items:center; }
+    .urm button, .urm input, .urm select { font:inherit; }
+    .urm button { cursor:pointer; border:1px solid var(--border-color, #7775); color:inherit; background:var(--surface-2, #8881); border-radius:8px; padding:7px 10px; }
+    .urm button:hover { filter:brightness(1.12); }
+    .urm button.primary { background:var(--accent, #7864c8); color:white; border-color:transparent; }
+    .urm button.star { border:0; background:transparent; padding:3px 7px; font-size:18px; }
+    .urm input, .urm select { color:inherit; background:var(--input-bg, var(--surface-2, #8881)); border:1px solid var(--border-color, #7775); border-radius:8px; padding:9px 10px; min-width:0; }
+    .urm input { flex:1; width:100%; }
+    .urm .toolbar { display:flex; gap:8px; margin:12px 0; flex-wrap:wrap; }
+    .urm .toolbar input { flex:1 1 180px; }
+    .urm .toolbar select { flex:0 1 150px; }
+    .urm .stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:12px 0; }
+    .urm .stat { border:1px solid var(--border-color, #7775); background:var(--surface-1, #8881); border-radius:10px; padding:10px; min-width:0; }
+    .urm .stat strong { display:block; font-size:17px; }
+    .urm .stat span { font-size:11px; opacity:.7; }
+    .urm .section { font-size:13px; font-weight:700; margin:18px 0 8px; }
+    .urm .model { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; border:1px solid var(--border-color, #7775); background:var(--surface-1, #8881); border-radius:10px; padding:10px; margin:7px 0; }
+    .urm .model-name { font-size:13px; font-weight:650; overflow-wrap:anywhere; }
+    .urm .model-meta { font-size:11px; opacity:.7; margin-top:3px; display:flex; gap:7px; flex-wrap:wrap; }
+    .urm .prices { display:flex; gap:10px; flex-wrap:wrap; font-size:12px; margin-top:7px; }
+    .urm .prices b { font-variant-numeric:tabular-nums; }
+    .urm .status { font-size:10px; padding:2px 6px; border-radius:20px; background:var(--surface-2, #8882); }
+    .urm .status.online { color:var(--success, #3a9b70); }
+    .urm .status.offline { color:var(--danger, #c66); }
+    .urm .empty, .urm .notice { opacity:.72; font-size:12px; padding:12px; border:1px dashed var(--border-color, #7775); border-radius:9px; }
+    .urm .foot { font-size:11px; opacity:.6; margin-top:14px; line-height:1.5; }
+    .urm .error { color:var(--danger, #c66); }
+    @media (max-width:520px) { .urm {padding:10px;} .urm .stats {grid-template-columns:repeat(3,minmax(0,1fr));} .urm .stat {padding:8px;} .urm .stat strong {font-size:14px;} .urm .model {grid-template-columns:minmax(0,1fr) auto;} }
+  `;
+  root.appendChild(style);
+
+  const app = document.createElement("div");
+  app.className = "urm";
+  root.appendChild(app);
+
+  let models = [];
+  let lastUpdated = null;
+  let loading = false;
+  let errorMessage = "";
+  let watchlist = readWatchlist();
+  let filter = "all";
+  let search = "";
+
+  function readWatchlist() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
+  }
+  function saveWatchlist() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(watchlist)); } catch {}
+  }
+  function money(value) {
+    if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+    const n = Number(value);
+    if (n === 0) return "$0";
+    if (n < 0.01) return "$" + n.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+    if (n < 1) return "$" + n.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+    return "$" + n.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  }
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+  function addModelCard(parent, model) {
+    const card = el("div", "model");
+    const left = el("div");
+    const name = el("div", "model-name", model.model_name || "Unknown model");
+    left.appendChild(name);
+    const meta = el("div", "model-meta");
+    meta.appendChild(el("span", "status " + (model.online ? "online" : "offline"), model.online ? "Online" : "Offline"));
+    meta.appendChild(el("span", "status", model.is_free ? "Free" : "Paid"));
+    if (model.vendor) meta.appendChild(el("span", "", model.vendor));
+    if (model.type) meta.appendChild(el("span", "", model.type));
+    left.appendChild(meta);
+    const prices = el("div", "prices");
+    const input = el("span");
+    input.append("In ");
+    const ib = el("b", "", money(model.input_price));
+    input.appendChild(ib);
+    input.append(" / 1M");
+    const output = el("span");
+    output.append("Out ");
+    output.appendChild(el("b", "", money(model.output_price)));
+    output.append(" / 1M");
+    prices.append(input, output);
+    left.appendChild(prices);
+
+    const star = el("button", "star", watchlist.includes(model.model_name) ? "★" : "☆");
+    star.type = "button";
+    star.title = watchlist.includes(model.model_name) ? "Remove from watchlist" : "Add to watchlist";
+    star.setAttribute("aria-label", star.title);
+    star.addEventListener("click", () => {
+      if (watchlist.includes(model.model_name)) watchlist = watchlist.filter(x => x !== model.model_name);
+      else watchlist.push(model.model_name);
+      saveWatchlist();
+      render();
+    });
+    card.append(left, star);
+    parent.appendChild(card);
+  }
+
+  function render() {
+    app.replaceChildren();
+    const head = el("div", "urm-head");
+    const titleWrap = el("div");
+    titleWrap.append(el("div", "urm-title", "UnoRouter prices"));
+    titleWrap.append(el("div", "urm-sub", lastUpdated ? "Updated " + lastUpdated.toLocaleTimeString() : "Live model catalogue"));
+    head.appendChild(titleWrap);
+    const actions = el("div", "urm-actions");
+    const refresh = el("button", "primary", loading ? "Refreshing…" : "Refresh");
+    refresh.disabled = loading;
+    refresh.addEventListener("click", loadCatalog);
+    actions.appendChild(refresh);
+    head.append(actions);
+    app.append(head);
+
+    if (errorMessage) app.append(el("div", "notice error", errorMessage));
+    if (loading && models.length === 0) app.append(el("div", "empty", "Loading UnoRouter catalogue…"));
+
+    if (models.length) {
+      const stats = el("div", "stats");
+      const free = models.filter(m => m.is_free).length;
+      const online = models.filter(m => m.online).length;
+      [[models.length, "Models"], [free, "Free"], [online, "Online"]].forEach(([v, label]) => {
+        const s = el("div", "stat");
+        s.append(el("strong", "", String(v)), el("span", "", label));
+        stats.appendChild(s);
+      });
+      app.append(stats);
+
+      const toolbar = el("div", "toolbar");
+      const searchInput = el("input");
+      searchInput.type = "search";
+      searchInput.placeholder = "Search model or provider…";
+      searchInput.value = search;
+      searchInput.addEventListener("input", e => { search = e.target.value; renderLists(); });
+      const select = el("select");
+      [["all","All models"],["watchlist","Watchlist"],["free","Free only"],["paid","Paid only"],["online","Online only"]].forEach(([v,l]) => {
+        const o = el("option", "", l); o.value = v; select.appendChild(o);
+      });
+      select.value = filter;
+      select.addEventListener("change", e => { filter = e.target.value; renderLists(); });
+      toolbar.append(searchInput, select);
+      app.append(toolbar);
+
+      const lists = el("div", "lists");
+      app.append(lists);
+      function renderLists() {
+        lists.replaceChildren();
+        const q = search.trim().toLowerCase();
+        let visible = models.filter(m => {
+          const matches = (m.model_name + " " + (m.vendor || "") + " " + (m.type || "")).toLowerCase().includes(q);
+          if (!matches) return false;
+          if (filter === "watchlist") return watchlist.includes(m.model_name);
+          if (filter === "free") return !!m.is_free;
+          if (filter === "paid") return !m.is_free;
+          if (filter === "online") return !!m.online;
+          return true;
+        });
+        if (filter === "watchlist") {
+          lists.append(el("div", "section", "Your watchlist"));
+        } else {
+          lists.append(el("div", "section", "Models (" + visible.length + ")"));
+        }
+        if (!visible.length) {
+          lists.append(el("div", "empty", filter === "watchlist" ? "No watched models yet. Switch to All models and tap ☆ beside a model." : "No models match this search."));
+          return;
+        }
+        visible.sort((a,b) => (a.model_name || "").localeCompare(b.model_name || ""));
+        visible.forEach(m => addModelCard(lists, m));
+      }
+      renderLists();
+    }
+
+    app.append(el("div", "foot", "Prices are UnoRouter's current routed prices in USD per 1 million tokens, not necessarily each provider's list price. The catalogue is public; this extension does not use or store your API keys. Auto-refreshes every 5 minutes."));
+  }
+
+  async function loadCatalog() {
+    if (loading) return;
+    loading = true;
+    errorMessage = "";
+    render();
+    try {
+      const response = await fetch(CATALOG_URL, { method: "GET", headers: { "Accept": "application/json" }, cache: "no-store" });
+      if (!response.ok) throw new Error("UnoRouter returned HTTP " + response.status);
+      const data = await response.json();
+      if (!data || !Array.isArray(data.models)) throw new Error("Unexpected catalogue response.");
+      models = data.models;
+      lastUpdated = new Date();
+      errorMessage = "";
+    } catch (err) {
+      errorMessage = "Couldn't load prices. " + (err && err.message ? err.message : "Check your connection or whether the UnoRouter API allows browser requests.");
+    } finally {
+      loading = false;
+      render();
+    }
+  }
+
+  render();
+  loadCatalog();
+  const timer = setInterval(loadCatalog, REFRESH_MS);
+  const unsubscribe = tab.onActivate(() => {
+    if (!lastUpdated || Date.now() - lastUpdated.getTime() > REFRESH_MS) loadCatalog();
+  });
+
+  return () => {
+    clearInterval(timer);
+    if (typeof unsubscribe === "function") unsubscribe();
+    tab.destroy();
+    style.remove();
+  };
+}
