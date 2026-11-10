@@ -206,23 +206,44 @@ export function setup(ctx) {
     app.append(el("div", "foot", "Prices are UnoRouter's current routed prices in USD per 1 million tokens, not necessarily each provider's list price. The catalogue is public; this extension does not use or store your API keys. Auto-refreshes every 5 minutes."));
   }
 
+  const pending = new Map();
+  let requestCounter = 0;
+
+  const unsubscribeBackend = ctx.onBackendMessage((payload) => {
+    if (!payload || payload.type !== "catalog_result") return;
+    const request = pending.get(payload.requestId);
+    if (!request) return;
+    pending.delete(payload.requestId);
+    loading = false;
+    if (payload.error) {
+      errorMessage = "Couldn't load prices. " + payload.error;
+    } else {
+      try {
+        const data = payload.data;
+        if (!data || !Array.isArray(data.models)) throw new Error("Unexpected catalogue response.");
+        models = data.models;
+        lastUpdated = new Date();
+        errorMessage = "";
+      } catch (err) {
+        errorMessage = "Couldn't read UnoRouter's catalogue. " + (err.message || String(err));
+      }
+    }
+    render();
+  });
+
   async function loadCatalog() {
     if (loading) return;
     loading = true;
     errorMessage = "";
     render();
+    const requestId = "catalog-" + Date.now() + "-" + (++requestCounter);
+    pending.set(requestId, true);
     try {
-      const response = await fetch(CATALOG_URL, { method: "GET", headers: { "Accept": "application/json" }, cache: "no-store" });
-      if (!response.ok) throw new Error("UnoRouter returned HTTP " + response.status);
-      const data = await response.json();
-      if (!data || !Array.isArray(data.models)) throw new Error("Unexpected catalogue response.");
-      models = data.models;
-      lastUpdated = new Date();
-      errorMessage = "";
+      ctx.sendToBackend({ type: "fetch_catalog", requestId });
     } catch (err) {
-      errorMessage = "Couldn't load prices. " + (err && err.message ? err.message : "Check your connection or whether the UnoRouter API allows browser requests.");
-    } finally {
+      pending.delete(requestId);
       loading = false;
+      errorMessage = "Couldn't contact the extension backend. " + (err && err.message ? err.message : String(err));
       render();
     }
   }
@@ -237,6 +258,8 @@ export function setup(ctx) {
   return () => {
     clearInterval(timer);
     if (typeof unsubscribe === "function") unsubscribe();
+    if (typeof unsubscribeBackend === "function") unsubscribeBackend();
+    pending.clear();
     tab.destroy();
     style.remove();
   };
