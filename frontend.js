@@ -231,7 +231,7 @@ export function setup(ctx) {
         let visible = models.filter(m => {
           const matches = (m.model_name + " " + (m.vendor || "") + " " + (m.type || "")).toLowerCase().includes(q);
           if (!matches) return false;
-          if (filter === "watchlist" || filter === "all") return false;
+          if (filter === "watchlist" || (filter === "all" && watchlist.includes(m.model_name))) return false;
           if (filter === "free") return !!m.is_free;
           if (filter === "paid") return !m.is_free;
           if (filter === "online") return !!m.online;
