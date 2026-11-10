@@ -1,11 +1,11 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "name": "UnoRouter Price Monitor",
   "identifier": "unorouter_price_monitor",
   "author": "ChatGPT",
-  "github": "https://github.com/",
+  "github": "https://github.com/porkyboy11/Uno-lumi",
   "homepage": "https://unorouter.com/",
-  "description": "Browse and watch live UnoRouter model prices inside Lumiverse.",
+  "description": "Monitor UnoRouter model prices, pin favourites, and view the active Lumiverse LLM model.",
   "permissions": [
     "cors_proxy"
   ],
