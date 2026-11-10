@@ -158,7 +158,7 @@ export function setup(ctx) {
       const activeModelId = activeConnection.model || "";
       const activeProvider = activeConnection.provider || "Unknown provider";
       const activeName = activeProfileName || activeProvider;
-      const normalized = value => String(value || "").toLowerCase().replace(/^models\\//, "").trim();
+      const normalized = value => String(value || "").toLowerCase().replace(/^models\//, "").trim();
       const matched = models.find(m => {
         const candidates = [m.model_name, m.id, m.model, m.model_id, m.slug];
         return candidates.some(v => normalized(v) === normalized(activeModelId));
