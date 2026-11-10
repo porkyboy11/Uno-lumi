@@ -72,6 +72,7 @@ export function setup(ctx) {
   let filter = "all";
   let search = "";
   let activeConnection = null;
+  let activeProfileName = null;
 
   function readWatchlist() {
     try {
@@ -156,19 +157,21 @@ export function setup(ctx) {
     if (activeConnection) {
       const activeModelId = activeConnection.model || "";
       const activeProvider = activeConnection.provider || "Unknown provider";
+      const activeName = activeProfileName || activeProvider;
       const normalized = value => String(value || "").toLowerCase().replace(/^models\\//, "").trim();
       const matched = models.find(m => {
         const candidates = [m.model_name, m.id, m.model, m.model_id, m.slug];
         return candidates.some(v => normalized(v) === normalized(activeModelId));
       });
-      const looksLikeUnoRouter = /unorouter/i.test(activeProvider) || !!matched;
+      const looksLikeUnoRouter = /unorouter/i.test(activeProvider + " " + activeName) || !!matched;
       const panel = el("div", "active-panel");
       panel.append(el("div", "section", "Currently connected"));
       const row = el("div", "model");
       const info = el("div");
       info.append(el("div", "model-name", activeModelId || "No model selected"));
-      info.append(el("div", "model-meta", (looksLikeUnoRouter ? "UnoRouter · " : "") + activeProvider));
+      info.append(el("div", "model-meta", activeName + " · " + activeProvider));
       if (matched) {
+        info.append(el("div", "model-meta", "UnoRouter catalogue match"));
         const prices = el("div", "prices");
         prices.append(el("span", "", "In " + money(matched.input_price) + " / 1M"));
         prices.append(el("span", "", "Out " + money(matched.output_price) + " / 1M"));
@@ -228,8 +231,7 @@ export function setup(ctx) {
         let visible = models.filter(m => {
           const matches = (m.model_name + " " + (m.vendor || "") + " " + (m.type || "")).toLowerCase().includes(q);
           if (!matches) return false;
-          if (filter === "watchlist") return watchlist.includes(m.model_name);
-          if (filter === "all" && watchlist.includes(m.model_name)) return false;
+          if (filter === "watchlist" || filter === "all") return false;
           if (filter === "free") return !!m.is_free;
           if (filter === "paid") return !m.is_free;
           if (filter === "online") return !!m.online;
@@ -296,21 +298,31 @@ export function setup(ctx) {
     }
   }
 
-  // The frontend connection API exposes the active LLM profile without revealing secrets.
+  // Lumiverse exposes safe connection summaries (never API keys or endpoint secrets).
+  function syncActiveConnection(connection) {
+    activeConnection = connection || null;
+    activeProfileName = null;
+    try {
+      const profiles = ctx.connections && typeof ctx.connections.list === "function"
+        ? ctx.connections.list()
+        : [];
+      const active = Array.isArray(profiles)
+        ? profiles.find(profile => profile.active || profile.id === activeConnection?.activeProfileId)
+        : null;
+      if (active) activeProfileName = active.name || null;
+    } catch {}
+    render();
+  }
   try {
     if (ctx.connections && typeof ctx.connections.getActive === "function") {
-      activeConnection = ctx.connections.getActive();
-      if (activeConnection && typeof activeConnection.then === "function") {
-        activeConnection.then(value => { activeConnection = value; render(); }).catch(() => {});
-      }
+      syncActiveConnection(ctx.connections.getActive());
     }
   } catch {}
   let unsubscribeConnection = null;
   try {
     if (ctx.connections && typeof ctx.connections.subscribe === "function") {
       unsubscribeConnection = ctx.connections.subscribe(connection => {
-        activeConnection = connection || null;
-        render();
+        syncActiveConnection(connection);
       });
     }
   } catch {}
