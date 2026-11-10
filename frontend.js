@@ -323,6 +323,7 @@ export function setup(ctx) {
       }
     }
     render();
+    scheduleAutoRefresh();
   });
 
   function compareModels(a,b) {
@@ -364,8 +365,8 @@ export function setup(ctx) {
       loading = false;
       errorMessage = "Couldn't contact the extension backend. " + (err && err.message ? err.message : String(err));
       render();
+      scheduleAutoRefresh();
     }
-    scheduleAutoRefresh();
   }
 
   // Lumiverse exposes safe connection summaries (never API keys or endpoint secrets).
