@@ -1,6 +1,11 @@
-# UnoRouter Price Monitor v1.2.0
+# UnoRouter Price Monitor v1.3.0
 
 Lumiverse Spindle extension for monitoring UnoRouter model prices.
+
+
+Disclaimer, this is completely vibe coded. I don't have any coding neurons in my brain. Thanks chatgpt
+
+Anyway! I made this as unorouter prices fluctuate a lot on sora models especially and I wanted a way to quickly check the price of models. 
 
 ## Features
 - Live UnoRouter catalogue with input/output USD prices per 1M tokens.
